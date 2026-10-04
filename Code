@@ -1,0 +1,130 @@
+import re
+from flask import Flask, render_template_string, request
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+
+app = Flask(__name__)
+
+# 1. Train a super simple ML model on startup (Toy Dataset)
+X_train = [
+    "Urgent verify your bank account details immediately click here",
+    "Password reset requested for your security update now",
+    "You won a free prize claim your cash reward now",
+    "Hey meeting rescheduled to tomorrow morning at 10am",
+    "Here is the project report file we discussed yesterday",
+    "Please find attached the weekly invoice update"
+]
+y_train = [1, 1, 1, 0, 0, 0] # 1 = Phishing, 0 = Safe
+
+vectorizer = TfidfVectorizer()
+X_train_vectorized = vectorizer.fit_transform(X_train)
+
+model = MultinomialNB()
+model.fit(X_train_vectorized, y_train)
+
+# Regular expressions for IoC extraction
+IOC_PATTERNS = {
+    'URLs': r'https?://[^\s<>"]+|www\.[^\s<>"]+',
+    'IP Addresses': r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b',
+    'MD5 Hashes': r'\b[a-fA-F0-9]{32}\b',
+    'SHA256 Hashes': r'\b[a-fA-F0-9]{64}\b',
+}
+
+def analyze_email(text):
+    # Extract IoCs using Regex
+    iocs = {}
+    for key, pattern in IOC_PATTERNS.items():
+        found = list(set(re.findall(pattern, text)))
+        if found:
+            iocs[key] = found
+
+    if not text.strip():
+        return {'score': 0, 'risk_level': 'Low', 'iocs': iocs}
+
+    # Predict using the Scikit-Learn Machine Learning model
+    text_vectorized = vectorizer.transform([text])
+    probability = model.predict_proba(text_vectorized)[0][1] # Probability of being phishing
+    score = round(probability * 100, 2)
+
+    risk_level = 'Low'
+    if score > 60:
+        risk_level = 'High'
+    elif score > 30:
+        risk_level = 'Medium'
+
+    return {
+        'iocs': iocs,
+        'score': score,
+        'risk_level': risk_level
+    }
+
+# Embedded HTML Template
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Phishing & IoC Pipeline</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans min-h-screen p-6">
+    <div class="max-w-4xl mx-auto">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-blue-400">ML-Powered Phishing & IoC Pipeline</h1>
+            <p class="text-gray-400 mt-2">Paste raw email content to evaluate risk via Machine Learning and extract IoCs.</p>
+        </header>
+
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg mb-8 border border-gray-700">
+            <form method="POST">
+                <label for="email_text" class="block text-sm font-medium mb-2 text-gray-300">Raw Email / Header Text</label>
+                <textarea id="email_text" name="email_text" rows="6" class="w-full bg-gray-900 border border-gray-700 rounded p-3 text-gray-100 focus:outline-none focus:border-blue-500" placeholder="Paste suspicious email text here..."></textarea>
+                <button type="submit" class="mt-4 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 px-4 rounded transition">Run ML Pipeline</button>
+            </form>
+        </div>
+
+        {% if result %}
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <h2 class="text-xl font-semibold mb-4 text-blue-300 border-b border-gray-700 pb-2">Analysis Results</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                <div class="bg-gray-900 p-4 rounded border border-gray-700">
+                    <span class="text-gray-400 text-sm">ML Phishing Probability:</span>
+                    <p class="text-lg font-bold {% if result.risk_level == 'High' %}text-red-400{% elif result.risk_level == 'Medium' %}text-yellow-400{% else %}text-green-400{% endif %}">
+                        {{ result.risk_level }} ({{ result.score }}%)
+                    </p>
+                </div>
+            </div>
+
+            <h3 class="text-lg font-semibold mb-3 text-gray-200">Extracted IoCs</h3>
+            {% if result.iocs %}
+                <div class="space-y-3">
+                    {% for type, items in result.iocs.items() %}
+                    <div class="bg-gray-900 p-3 rounded border border-gray-700">
+                        <span class="text-blue-400 font-medium text-sm">{{ type }}:</span>
+                        <ul class="list-disc list-inside text-sm text-gray-300 mt-1">
+                            {% for item in items %}
+                            <li>{{ item }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class="text-gray-400 text-sm">No indicators of compromise detected.</p>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+"""
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    result = None
+    if request.method == 'POST':
+        email_text = request.form.get('email_text', '')
+        result = analyze_email(email_text)
+    return render_template_string(HTML_TEMPLATE, result=result)
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
